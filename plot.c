@@ -68,6 +68,7 @@ int plot_clear_screen(){
   return 1;
 }
 
+//#define POINTS
 
 int *plot_render_particles(float *x, float *rad, int *type, long N, float L, float *shade){
     // focus on the part of scene where we draw nice

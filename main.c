@@ -111,6 +111,15 @@ __global__ void nbl_build(float *x, int *cells, int *count, int *size,
     cells[bt] = i;
 }
 
+__global__ void makecopy(float *x, float *copyx){
+    int i = blockDim.x*blockIdx.x + threadIdx.x;
+
+    //=========================================
+    // rehash all of the particles into the list
+    copyx[2*i+0] = x[2*i+0];
+    copyx[2*i+1] = x[2*i+1];
+}
+
 //==================================================================
 // the timestep - can be CPU or CUDA!
 //==================================================================
@@ -128,10 +137,6 @@ void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
     index[0] = __float2int_rz(x[2*i+0]/L  * size[0]);
     index[1] = __float2int_rz(x[2*i+1]/L  * size[1]);
 
-    //=========================================
-    // rehash all of the particles into the list
-    copyx[2*i+0] = x[2*i+0];
-    copyx[2*i+1] = x[2*i+1];
 
     //==========================================
     // this is mainly for CUDA optimization
@@ -280,14 +285,14 @@ void simulate(int seed){
 #ifdef CUDA_NO_SM_11_ATOMIC_INTRINSICS
         printf("WARNING! Not using atomics!\n");
 #endif
-    int    N      = 4*1024*32;
+    int    N      = 1024*256;
     int pbc[]     = {1,1};
     float L       = 0.0;
     float dt      = 1e-1;
     float t       = 0.0;
     float Tglobal = 0.0;
 
-    float colfact = 1.0;
+    float colfact = 64.0;
 
     int i;
     int mem_size_f = sizeof(float)*N;
@@ -308,7 +313,7 @@ void simulate(int seed){
 
     #ifdef PLOT
         int *key;
-        plot_init(680);
+        plot_init(1100);
         plot_clear_screen();
         key = plot_render_particles(x, rad, type, N, L,col);
     #else
@@ -415,11 +420,13 @@ void simulate(int seed){
         nbl_reset<<<N/256,256>>>(cu_cells, cu_count, size_total);
         nbl_build<<<N/256,256>>>(cu_x, cu_cells, cu_count, cu_size,
                 size_total, L);
+        makecopy<<<N/256,256>>>(cu_x, cu_copyx);
         step<<<N/256, 256 >>>(cu_x, cu_copyx, cu_v, cu_type, cu_rad, cu_col,
                     cu_cells, cu_count, cu_size, size_total, cu_key,
                     N, L, R, cu_pbc, dt, Tglobal, colfact);
         cudaThreadSynchronize();
         cudaMemcpy(x, cu_x, fmem_siz2, cudaMemcpyDeviceToHost);
+        cudaMemcpy(col, cu_col, fmem_size, cudaMemcpyDeviceToHost);
         cudaMemcpy(cells, cu_cells, mem_cell2, cudaMemcpyDeviceToHost);
         cudaMemcpy(count, cu_count, mem_cell, cudaMemcpyDeviceToHost);
         cudaThreadSynchronize();

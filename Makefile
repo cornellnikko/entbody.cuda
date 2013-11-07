@@ -1,5 +1,4 @@
-DOPLOT = 0
-POINTS = 0
+DOPLOT = 1
 
 GCC=nvcc
 EXE=entbody
