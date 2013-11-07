@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <time.h>
 #include <float.h>
 
 #include <cuda.h>
@@ -13,10 +14,6 @@
 
 #ifdef PLOT
 #include "plot.h"
-#endif
-
-#ifdef FPS
-#include <time.h>
 #endif
 
 void simulate(int s);
@@ -79,11 +76,11 @@ int main(int argc, char **argv){
     int seed_in = 0;
 
     CUT_DEVICE_INIT();
-    
-    if (argc == 1) 
+
+    if (argc == 1)
         simulate(seed_in);
     else if (argc == 2)
-        simulate(seed_in);
+        simulate(atoi(argv[1]));//seed_in);
     else {
         printf("usage:\n");
         printf("\t./entbody [seed]\n");
@@ -91,34 +88,50 @@ int main(int argc, char **argv){
     return 0;
 }
 
+__global__ void nbl_reset(int *cells, int *count, int size_total){
+    int i = blockDim.x*blockIdx.x + threadIdx.x;
+
+    // reset the neighborlists
+    if (i < size_total)
+        count[i] = 0;
+    if (i < size_total*NMAX)
+        cells[i] = 0;
+}
+
+__global__ void nbl_build(float *x, int *cells, int *count, int *size,
+        int size_total, float L){
+    int i = blockDim.x*blockIdx.x + threadIdx.x;
+    volatile int index[2];
+
+    index[0] = __float2int_rz(x[2*i+0]/L  * size[0]);
+    index[1] = __float2int_rz(x[2*i+1]/L  * size[1]);
+    volatile int t  = index[0] + index[1]*size[0];
+    volatile unsigned int ct = atomicAdd(&count[t], 1);
+    volatile unsigned int bt = NMAX*t + ct;
+    cells[bt] = i;
+}
+
 //==================================================================
 // the timestep - can be CPU or CUDA!
 //==================================================================
 __global__
-void step(float *x, float *copyx, float *v, int *type, float *rad, float *col, 
-          unsigned int *cells, unsigned int *count, int *size, int size_total, int *key,
+void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
+          int *cells, int *count, int *size, int size_total, int *key,
           long N, float L, float R, int *pbc, float dt, float Tglobal, float colfact){
 
     int i = blockDim.x*blockIdx.x + threadIdx.x;
     int j;
+
     //=========================================
     // reset the neighborlists
-    int index[2];
-    if (i < size_total)
-        count[i] = 0;
-    __syncthreads();
+    volatile int index[2];
+    index[0] = __float2int_rz(x[2*i+0]/L  * size[0]);
+    index[1] = __float2int_rz(x[2*i+1]/L  * size[1]);
 
     //=========================================
     // rehash all of the particles into the list
-    index[0] = (int)(x[2*i+0]/L  * size[0]);
-    index[1] = (int)(x[2*i+1]/L  * size[1]);
-    int t = index[0] + index[1]*size[0];
-    cells[NMAX*t + count[t]] = i;
-    copyx[2*i+ 0] = x[2*i+0];
-    copyx[2*i+ 1] = x[2*i+1];
-    
-    atomicInc(&count[t], 0xffffffff);
-    __syncthreads();
+    copyx[2*i+0] = x[2*i+0];
+    copyx[2*i+1] = x[2*i+1];
 
     //==========================================
     // this is mainly for CUDA optimization
@@ -132,9 +145,8 @@ void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
     float px, py;
     float vx, vy;
     float fx, fy;
-    //float wx, wy;
     float ox, oy;
- 
+
     int ttype;
     float trad;
     float tcol;
@@ -143,30 +155,31 @@ void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
     //==========================================
     // find forces on all particles
     tcol  = col[i]; ttype = type[i]; trad = rad[i];
-    px = x[2*i+0];  py = x[2*i+1];
-    vx = v[2*i+0];  vy = v[2*i+1]; 
+    px = copyx[2*i+0];
+    py = copyx[2*i+1];
+    vx = v[2*i+0];
+    vy = v[2*i+1];
 
-    fx = 0.0;       fy = 0.0;
-    //wx = 0.0;       wy = 0.0;
-    ox = 0.0;       oy = 0.0; 
- 
+    fx = 0.0; fy = 0.0;
+    ox = 0.0; oy = 0.0;
+
     #ifdef PLOT
-    if (key['w'] == 1){     
-        if (ttype == RED)   
+    if (key['w'] == 1){
+        if (ttype == RED)
             oy = -KICKFORCE;
-    }                       
-    if (key['s'] == 1){     
-        if (ttype == RED)   
-            oy = KICKFORCE; 
-    }                       
-    if (key['a'] == 1){     
-        if (ttype == RED)   
+    }
+    if (key['s'] == 1){
+        if (ttype == RED)
+            oy = KICKFORCE;
+    }
+    if (key['a'] == 1){
+        if (ttype == RED)
             ox = -KICKFORCE;
-    }                       
-    if (key['d'] == 1){     
-        if (ttype == RED)   
-            ox = KICKFORCE; 
-    }     
+    }
+    if (key['d'] == 1){
+        if (ttype == RED)
+            ox = KICKFORCE;
+    }
     #endif
 
     index[0] = (int)(px/L * size[0]);
@@ -180,7 +193,7 @@ void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
         if (pbc[0] < image[0] || pbc[1] < image[1])  goodcell = 0;
 
         if (goodcell){
-            ind = tix[0] + tix[1]*size[0]; 
+            ind = tix[0] + tix[1]*size[0];
             for (j=0; j<count[ind]; j++){
                 tn = cells[NMAX*ind+j];
                 float px2 = copyx[2*tn+0];
@@ -190,37 +203,35 @@ void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
                 dx[0] = px2 - px;
                 if (image[0]) dx[0] += L*tt[0];
                 dist += dx[0]*dx[0];
-                
+
                 dx[1] = py2 - py;
                 if (image[1]) dx[1] += L*tt[1];
                 dist += dx[1]*dx[1];
 
                 //===============================================
-                // force calculation 
+                // force calculation
                 if (dist > EPSILON && dist < R2){
                     float r0 = trad+rad[tn];
-                    float l = sqrt(dist);  
+                    float l = sqrt(dist);
                     float co = FORCE_HERTZ_EPSILON
-                            * (1-l/r0)*(1-l/r0) * (l<r0); 
-                    fx += -co * dx[0]; 
+                            * (1-l/r0)*(1-l/r0) * (l<r0);
+                    fx += -co * dx[0];
                     fy += -co * dx[1];
                     tcol += fx*fx + fy*fy;
                 }
              }
         }
-    } } 
+    } }
 
     //=====================================
-    // global forces    
+    // global forces
     fx += ox;
     fy += oy;
-    float speed= 0.0;
+
     float damp = 1.0;
-    float vlen = vx*vx + vy*vy;  
-    if (vlen > 1e-6f){  
-        fx -= damp*(vlen-speed)*vx/vlen;
-        fy -= damp*(vlen-speed)*vy/vlen;
-     }  
+    //float vlen = vx*vx + vy*vy;
+    fx -= damp*vx;
+    fy -= damp*vy;
 
     //=====================================
     // Newton-Stomer-Verlet
@@ -229,9 +240,9 @@ void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
 
     px += vx * dt;
     py += vy * dt;
-    
+
     //======================================
-    // boundary conditions 
+    // boundary conditions
     const float restoration = 0.5;
     if (pbc[0] == 1){
         if (px >= L-EPSILON || px < 0)
@@ -252,12 +263,12 @@ void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
         if (py < 0) {py = -py;    vy *= -restoration;}
         if (py >= L-EPSILON || py < 0){py = mymod(py, L);}
     }
- 
-    tcol = tcol/colfact; 
+
+    tcol = tcol/colfact;
 
     col[i] = tcol;  type[i] = ttype;
     x[2*i+0] = px;  x[2*i+1] = py;
-    v[2*i+0] = vx;  v[2*i+1] = vy; 
+    v[2*i+0] = vx;  v[2*i+1] = vy;
 }
 
 
@@ -266,8 +277,10 @@ void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
 //==================================================
 void simulate(int seed){
     ran_seed(seed);
-
-    int    N      = 16*1024;
+#ifdef CUDA_NO_SM_11_ATOMIC_INTRINSICS
+        printf("WARNING! Not using atomics!\n");
+#endif
+    int    N      = 4*1024*32;
     int pbc[]     = {1,1};
     float L       = 0.0;
     float dt      = 1e-1;
@@ -293,9 +306,9 @@ void simulate(int seed){
 
     float time_end = 2e10;
 
-    #ifdef PLOT 
+    #ifdef PLOT
         int *key;
-        plot_init(1024);
+        plot_init(680);
         plot_clear_screen();
         key = plot_render_particles(x, rad, type, N, L,col);
     #else
@@ -305,22 +318,22 @@ void simulate(int seed){
 
     //==========================================
     // initialize
-    float radius  = 1.0;            
-    L = 1.05*sqrt(pi*radius*radius*N);   
-                                    
-    for (i=0; i<N; i++){            
-        rad[i] = radius;            
-        x[2*i+0] = L*ran_ran2();    
-        x[2*i+1] = L*ran_ran2();    
-                                    
-        type[i] = BLACK;            
-        v[2*i+0] = 0.0;             
-        v[2*i+1] = 0.0;             
-        if (i==0) {                 
-            type[i] = RED;          
-            rad[i] = 1*radius;      
-        }                           
-     }                              
+    float radius  = 1.0;
+    L = 0.97*sqrt(pi*radius*radius*N);
+
+    for (i=0; i<N; i++){
+        rad[i] = radius;
+        x[2*i+0] = L*ran_ran2();
+        x[2*i+1] = L*ran_ran2();
+
+        type[i] = BLACK;
+        v[2*i+0] = 0.0;
+        v[2*i+1] = 0.0;
+        if (i==0) {
+            type[i] = RED;
+            rad[i] = 1*radius;
+        }
+     }
 
 
     // find out what happened in initialization
@@ -333,12 +346,12 @@ void simulate(int seed){
     int size[2];
     int size_total = 1;
     for (i=0; i<2; i++){
-        size[i] = (int)(L / R); 
+        size[i] = (int)(L / R);
         size_total *= size[i];
     }
 
-    unsigned int *count = (unsigned int*)malloc(sizeof(unsigned int)*size_total);
-    unsigned int *cells = (unsigned int*)malloc(sizeof(unsigned int)*size_total*NMAX);
+    int *count = (int*)malloc(sizeof(int)*size_total);
+    int *cells = (int*)malloc(sizeof(int)*size_total*NMAX);
     for (i=0; i<size_total; i++)
         count[i] = 0;
     for (i=0; i<size_total*NMAX; i++)
@@ -347,39 +360,39 @@ void simulate(int seed){
     //==========================================================
     // where the magic happens
     //==========================================================
-    int mem_size2 = sizeof(int)*2;                              
-    int imem_size = sizeof(int)*N;                              
-    int fmem_size = sizeof(float)*N;                            
-    int fmem_siz2 = sizeof(float)*N*2;                          
-    int mem_cell  = sizeof(unsigned int)*size_total;            
-    int mem_cell2 = sizeof(unsigned int)*size_total*NMAX;   
-                                                                
-    unsigned int *cu_count  = NULL;                             
-    unsigned int *cu_cells  = NULL;                             
-    int *cu_size   = NULL;                                      
-    int *cu_type   = NULL;                                      
-    int *cu_key    = NULL;                                      
-    float *cu_rad  = NULL;                                      
-    float *cu_col  = NULL;                                      
-    float *cu_x    = NULL;                                      
-    float *cu_copyx= NULL;                                      
-    float *cu_v    = NULL;                                      
-    int *cu_pbc    = NULL;                                      
-                                                                
-    cudaMalloc((void**) &cu_pbc,   2*sizeof(int));  
-    cudaMalloc((void**) &cu_count, mem_cell);                   
-    cudaMalloc((void**) &cu_cells, mem_cell2);                  
-    cudaMalloc((void**) &cu_size,  mem_size2);                  
-                                                                
-    cudaMalloc((void**) &cu_key,   mem_size_k);                 
-    cudaMalloc((void**) &cu_type,  imem_size);                  
-    cudaMalloc((void**) &cu_rad,   fmem_size);                  
-    cudaMalloc((void**) &cu_col,   fmem_size);                  
-    cudaMalloc((void**) &cu_x,     fmem_siz2);                  
-    cudaMalloc((void**) &cu_copyx, fmem_siz2);                  
-    cudaMalloc((void**) &cu_v,     fmem_siz2);                  
-                                                                
-    printf("Copying problem...n");                             
+    int mem_size2 = sizeof(int)*2;
+    int imem_size = sizeof(int)*N;
+    int fmem_size = sizeof(float)*N;
+    int fmem_siz2 = sizeof(float)*N*2;
+    int mem_cell  = sizeof(int)*size_total;
+    int mem_cell2 = sizeof(int)*size_total*NMAX;
+
+    int *cu_count  = NULL;
+    int *cu_cells  = NULL;
+    int *cu_size   = NULL;
+    int *cu_type   = NULL;
+    int *cu_key    = NULL;
+    float *cu_rad  = NULL;
+    float *cu_col  = NULL;
+    float *cu_x    = NULL;
+    float *cu_copyx= NULL;
+    float *cu_v    = NULL;
+    int *cu_pbc    = NULL;
+
+    cudaMalloc((void**) &cu_pbc,   2*sizeof(int));
+    cudaMalloc((void**) &cu_count, mem_cell);
+    cudaMalloc((void**) &cu_cells, mem_cell2);
+    cudaMalloc((void**) &cu_size,  mem_size2);
+
+    cudaMalloc((void**) &cu_key,   mem_size_k);
+    cudaMalloc((void**) &cu_type,  imem_size);
+    cudaMalloc((void**) &cu_rad,   fmem_size);
+    cudaMalloc((void**) &cu_col,   fmem_size);
+    cudaMalloc((void**) &cu_x,     fmem_siz2);
+    cudaMalloc((void**) &cu_copyx, fmem_siz2);
+    cudaMalloc((void**) &cu_v,     fmem_siz2);
+
+    printf("Copying problem...\n");
     cudaMemcpy(cu_size,  size,  mem_size2, cudaMemcpyHostToDevice);
     cudaMemcpy(cu_type,  type,  imem_size, cudaMemcpyHostToDevice);
     cudaMemcpy(cu_rad,   rad,   fmem_size, cudaMemcpyHostToDevice);
@@ -387,46 +400,57 @@ void simulate(int seed){
     cudaMemcpy(cu_x,     x,     fmem_siz2, cudaMemcpyHostToDevice);
     cudaMemcpy(cu_v,     v,     fmem_siz2, cudaMemcpyHostToDevice);
     cudaMemcpy(cu_pbc, pbc,   2*sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemset(cu_count, 0, mem_cell);                          
-    cudaMemset(cu_cells, 0, mem_cell2);                         
-    ERROR_CHECK                                                 
-
+    cudaMemset(cu_count, 0, mem_cell);
+    cudaMemset(cu_cells, 0, mem_cell2);
+    ERROR_CHECK
 
     int frames = 0;
 
-    #ifdef FPS
-    struct timespec start;
+    float rate;
+    struct timespec start, end;
     clock_gettime(CLOCK_REALTIME, &start);
-    #endif
 
     for (t=0.0; t<time_end; t+=dt){
         cudaMemcpy(cu_key, key, mem_size_k, cudaMemcpyHostToDevice);
-        step<<<256, N/256 >>>(cu_x, cu_copyx, cu_v, cu_type, cu_rad, cu_col, 
+        nbl_reset<<<N/256,256>>>(cu_cells, cu_count, size_total);
+        nbl_build<<<N/256,256>>>(cu_x, cu_cells, cu_count, cu_size,
+                size_total, L);
+        step<<<N/256, 256 >>>(cu_x, cu_copyx, cu_v, cu_type, cu_rad, cu_col,
                     cu_cells, cu_count, cu_size, size_total, cu_key,
                     N, L, R, cu_pbc, dt, Tglobal, colfact);
+        cudaThreadSynchronize();
         cudaMemcpy(x, cu_x, fmem_siz2, cudaMemcpyDeviceToHost);
+        cudaMemcpy(cells, cu_cells, mem_cell2, cudaMemcpyDeviceToHost);
+        cudaMemcpy(count, cu_count, mem_cell, cudaMemcpyDeviceToHost);
+        cudaThreadSynchronize();
         ERROR_CHECK
 
-        #ifdef PLOT 
+        int ccc=0;
+        for (i=0; i<size_total; i++)
+            ccc += count[i];
+
+        clock_gettime(CLOCK_REALTIME, &end);
+        rate = frames/((end.tv_sec-start.tv_sec)+(end.tv_nsec-start.tv_nsec)/1e9);
+
+        if (frames % 100 == 0){
+            printf("tot = %i\trate = %f\r", ccc, rate);
+            fflush(stdout);
+        }
+
+        #ifdef PLOT
             plot_clear_screen();
             key = plot_render_particles(x, rad, type, N, L,col);
             if (key['q'] == 1) break;
         #endif
         frames++;
-
     }
     // end of the magic, cleanup
     //----------------------------------------------
-    #ifdef FPS
-    struct timespec end;
-    clock_gettime(CLOCK_REALTIME, &end);
-    printf("fps = %f\n", frames/((end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec)/1e9));
-    #endif
 
     free(cells);
     free(count);
 
-    free(copyx); 
+    free(copyx);
     free(x);
     free(v);
     free(rad);
@@ -443,10 +467,10 @@ void simulate(int seed){
     cudaFree(cu_x);
     cudaFree(cu_v);
     cudaFree(cu_copyx);
-    ERROR_CHECK  
+    ERROR_CHECK
 
     #ifdef PLOT
-    plot_clean(); 
+    plot_clean();
     #else
     free(key);
     #endif

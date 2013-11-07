@@ -1,16 +1,15 @@
-DOPLOT = 1
-FPS    = 1
+DOPLOT = 0
 POINTS = 0
 
-GCC = nvcc 
-EXE = entbody
-SRC = main.c util.c 
-FLAGS = -O3 
-LIBFLAGS = -lm
+GCC=nvcc
+EXE=entbody
+SRC=main.c util.c
+FLAGS=-O3
+LIBFLAGS=-lm -lrt
 
 # we want the compile line to be essentially
 # nvcc main.cu -arch sm_12 -DPLOT -lGL -lGLU -lglut
-FLAGS += -x cu -DCUDA -arch sm_11
+FLAGS += -x cu -DCUDA -arch=sm_13
 
 ifeq ($(DOPLOT), 1)
     SRC += plot.c
@@ -18,23 +17,14 @@ ifeq ($(DOPLOT), 1)
     LIBFLAGS += -lGL -lGLU -lglut
 endif
 
-ifeq ($(FPS),1)
-    LIBFLAGS += -lrt
-    FLAGS += -DFPS
-endif
-
-ifeq ($(POINTS), 1)
-    FLAGS += -DPOINTS
-endif
-
 # default super-target
 all: $(EXE)
 
 # the standard executable
-$(EXE): $(SRC) 
+$(EXE): $(SRC)
 	$(GCC) $(FLAGS) $^ -o $@ $(LIBFLAGS)
 
-clean: 
+clean:
 	rm -rf $(EXE)
 
 .PHONY: clean
