@@ -18,6 +18,12 @@
 
 void simulate(int s);
 
+#define NPOW        (10 + 10)
+#define TPOW        (6 + NPOW%2)
+#define N           (1 << NPOW)
+#define NTHREADS    (1 << TPOW)
+#define NBLOCKS     (1 << ((NPOW-TPOW)/2))
+
 #define KICKFORCE 10.0f
 #define FORCE_HERTZ_EPSILON 100.0f
 
@@ -33,14 +39,13 @@ void simulate(int s);
         exit(EXIT_FAILURE);                                                  \
     } }
 
-#define CUT_DEVICE_INIT() {                                                \
+#define CUT_DEVICE_INIT(dev) {                                               \
     int deviceCount;                                                         \
     CUDA_SAFE_CALL(cudaGetDeviceCount(&deviceCount));                        \
     if (deviceCount == 0) {                                                  \
         fprintf(stderr, "cutil error: no devices supporting CUDA.\n");       \
         exit(EXIT_FAILURE);                                                  \
     }                                                                        \
-    int dev = 0;                                                             \
     if (dev < 0) dev = 0;                                                    \
     if (dev > deviceCount-1) dev = deviceCount - 1;                          \
     cudaDeviceProp deviceProp;                                               \
@@ -75,7 +80,8 @@ __device__ float mymod(float a, float b){
 int main(int argc, char **argv){
     int seed_in = 0;
 
-    CUT_DEVICE_INIT();
+    int device = 0;
+    CUT_DEVICE_INIT(device);
 
     if (argc == 1)
         simulate(seed_in);
@@ -89,7 +95,9 @@ int main(int argc, char **argv){
 }
 
 __global__ void nbl_reset(int *cells, int *count, int size_total){
-    int i = blockDim.x*blockIdx.x + threadIdx.x;
+    int idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int idy = blockDim.y*blockIdx.y + threadIdx.y;
+    int i = idx + idy*NBLOCKS*NTHREADS;
 
     // reset the neighborlists
     if (i < size_total)
@@ -100,7 +108,9 @@ __global__ void nbl_reset(int *cells, int *count, int size_total){
 
 __global__ void nbl_build(float *x, int *cells, int *count, int *size,
         int size_total, float L){
-    int i = blockDim.x*blockIdx.x + threadIdx.x;
+    int idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int idy = blockDim.y*blockIdx.y + threadIdx.y;
+    int i = idx + idy*NBLOCKS*NTHREADS;
     volatile int index[2];
 
     index[0] = __float2int_rz(x[2*i+0]/L  * size[0]);
@@ -112,10 +122,9 @@ __global__ void nbl_build(float *x, int *cells, int *count, int *size,
 }
 
 __global__ void makecopy(float *x, float *copyx){
-    int i = blockDim.x*blockIdx.x + threadIdx.x;
-
-    //=========================================
-    // rehash all of the particles into the list
+    int idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int idy = blockDim.y*blockIdx.y + threadIdx.y;
+    int i = idx + idy*NBLOCKS*NTHREADS;
     copyx[2*i+0] = x[2*i+0];
     copyx[2*i+1] = x[2*i+1];
 }
@@ -126,9 +135,11 @@ __global__ void makecopy(float *x, float *copyx){
 __global__
 void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
           int *cells, int *count, int *size, int size_total, int *key,
-          long N, float L, float R, int *pbc, float dt, float Tglobal, float colfact){
+          float L, float R, int *pbc, float dt, float Tglobal, float colfact){
 
-    int i = blockDim.x*blockIdx.x + threadIdx.x;
+    int idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int idy = blockDim.y*blockIdx.y + threadIdx.y;
+    int i = idx + idy*NBLOCKS*NTHREADS;
     int j;
 
     //=========================================
@@ -285,7 +296,6 @@ void simulate(int seed){
 #ifdef CUDA_NO_SM_11_ATOMIC_INTRINSICS
         printf("WARNING! Not using atomics!\n");
 #endif
-    int    N      = 1024*256;
     int pbc[]     = {1,1};
     float L       = 0.0;
     float dt      = 1e-1;
@@ -313,7 +323,7 @@ void simulate(int seed){
 
     #ifdef PLOT
         int *key;
-        plot_init(1100);
+        plot_init(800);
         plot_clear_screen();
         key = plot_render_particles(x, rad, type, N, L,col);
     #else
@@ -415,15 +425,18 @@ void simulate(int seed){
     struct timespec start, end;
     clock_gettime(CLOCK_REALTIME, &start);
 
+    dim3 grid(NBLOCKS, NBLOCKS);
+    dim3 block(NTHREADS, 1);
+
     for (t=0.0; t<time_end; t+=dt){
         cudaMemcpy(cu_key, key, mem_size_k, cudaMemcpyHostToDevice);
-        nbl_reset<<<N/256,256>>>(cu_cells, cu_count, size_total);
-        nbl_build<<<N/256,256>>>(cu_x, cu_cells, cu_count, cu_size,
+        nbl_reset<<<grid, block>>>(cu_cells, cu_count, size_total);
+        nbl_build<<<grid, block>>>(cu_x, cu_cells, cu_count, cu_size,
                 size_total, L);
-        makecopy<<<N/256,256>>>(cu_x, cu_copyx);
-        step<<<N/256, 256 >>>(cu_x, cu_copyx, cu_v, cu_type, cu_rad, cu_col,
+        makecopy<<<grid, block>>>(cu_x, cu_copyx);
+        step<<<grid, block>>>(cu_x, cu_copyx, cu_v, cu_type, cu_rad, cu_col,
                     cu_cells, cu_count, cu_size, size_total, cu_key,
-                    N, L, R, cu_pbc, dt, Tglobal, colfact);
+                    L, R, cu_pbc, dt, Tglobal, colfact);
         cudaThreadSynchronize();
         cudaMemcpy(x, cu_x, fmem_siz2, cudaMemcpyDeviceToHost);
         cudaMemcpy(col, cu_col, fmem_size, cudaMemcpyDeviceToHost);
@@ -439,7 +452,7 @@ void simulate(int seed){
         clock_gettime(CLOCK_REALTIME, &end);
         rate = frames/((end.tv_sec-start.tv_sec)+(end.tv_nsec-start.tv_nsec)/1e9);
 
-        if (frames % 100 == 0){
+        if (frames % 10 == 0){
             printf("tot = %i\trate = %f\r", ccc, rate);
             fflush(stdout);
         }
