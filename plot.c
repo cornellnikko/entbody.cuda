@@ -138,11 +138,12 @@ int *plot_render_particles(float *x, float *rad, int *type, long N, float L, flo
         for (t=0; t<2*pi; t+=2*pi/secs)
           glVertex2f(tx + rx*cos(t), ty + rx*sin(t));
         glEnd();
-/*        plot_set_draw_color(0.0,0.0,0.0,1.0);
+
+        plot_set_draw_color(0.0,0.0,0.0,1.0);
         glBegin(GL_LINE_LOOP);
         for (t=0; t<2*pi; t+=2*pi/secs)
           glVertex2f(tx + rx*cos(t), ty + rx*sin(t));
-        glEnd();*/
+        glEnd();
         #endif
     }
     #ifdef OPENMP 
