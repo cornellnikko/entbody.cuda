@@ -16,9 +16,11 @@
 #include "plot.h"
 #endif
 
+#include "io.h"
+
 void simulate(int s);
 
-#define NPOW        (10+10)
+#define NPOW        (7+7)
 #define TPOW        (6 + NPOW%2)
 #define N           (1 << NPOW)
 #define NTHREADS    (1 << TPOW)
@@ -320,6 +322,8 @@ void simulate(int seed){
 
     float time_end = 2e10;
 
+	time_end = 10;
+
     #ifdef PLOT
         int *key;
         plot_init(900); // 2**18 - 450, 2**20 - 900, 2**21 - 1100
@@ -427,7 +431,12 @@ void simulate(int seed){
     dim3 grid(NBLOCKS, NBLOCKS);
     dim3 block(NTHREADS, 1);
 
+	FILE* fp = start_frames("particles.csv",N);
+	printf("Ready to compute %f->%f\n",dt,time_end);
+
+
     for (t=0.0; t<time_end; t+=dt){
+//	printf("Starting %f/%f\n",t,time_end);
         nbl_reset<<<grid, block>>>(cu_cells, cu_count, size_total);
         nbl_build<<<grid, block>>>(cu_x, cu_cells, cu_count, cu_size, size_total, L);
         makecopy<<<grid, block>>>(cu_x, cu_copyx);
@@ -457,10 +466,21 @@ void simulate(int seed){
             cudaMemcpy(cu_key, key, mem_size_k, cudaMemcpyHostToDevice);
         }
         #endif
+
+	//#ifdef IOFILE
+	if (frames % 1 == 0)
+	{
+		cudaMemcpy(x, cu_x, fmem_siz2, cudaMemcpyDeviceToHost);
+                cudaMemcpy(col, cu_col, fmem_size, cudaMemcpyDeviceToHost);
+		write_frame(fp,x,rad,type,N,L,col);
+	}
+	//#endif
         frames++;
     }
     // end of the magic, cleanup
     //----------------------------------------------
+	fflush(stdout);
+	printf("\nEnd of magic, cleanup\n");
 
     free(cells);
     free(count);
@@ -484,6 +504,8 @@ void simulate(int seed){
     cudaFree(cu_copyx);
     ERROR_CHECK
 
+	printf("Passed end error check\n");
+	end_frames(fp);
     #ifdef PLOT
     plot_clean();
     #else
