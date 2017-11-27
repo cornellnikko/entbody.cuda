@@ -26,10 +26,9 @@
 
 void simulate(int s);
 
-#define NPOW        (8+8)
+#define NPOW        (7+7)
 #define TPOW        (6 + NPOW%2)
 #define N           (1 << NPOW)
-#define NTIMESTWO   (N*2)
 #define NTHREADS    (1 << TPOW)
 #define NBLOCKS     (1 << ((NPOW-TPOW)/2))
 
@@ -66,7 +65,8 @@ void simulate(int s);
     CUDA_SAFE_CALL(cudaSetDevice(dev));                                      \
 }
 
-__device__ int mod_rvec(int a, int b, int p, int* __restrict__ image){
+
+__device__ int mod_rvec(int a, int b, int p, int *image){
     *image = 1;
     if (b==0) {if (a==0) *image=0; return 0;}
     if (p != 0){
@@ -102,12 +102,10 @@ int main(int argc, char **argv){
     return 0;
 }
 
-//__global__
-__device__
-void nbl_reset(int* __restrict__ cells, int* __restrict__ count, int size_total){
-    //int idx = blockDim.x*blockIdx.x + threadIdx.x;
-    //int idy = blockDim.y*blockIdx.y + threadIdx.y;
-    int i = blockDim.x*blockIdx.x + threadIdx.x + (blockDim.y*blockIdx.y + threadIdx.y)*NBLOCKS*NTHREADS;
+__global__ void nbl_reset(int *cells, int *count, int size_total){
+    int idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int idy = blockDim.y*blockIdx.y + threadIdx.y;
+    int i = idx + idy*NBLOCKS*NTHREADS;
 
     // reset the neighborlists
     if (i < size_total)
@@ -116,13 +114,11 @@ void nbl_reset(int* __restrict__ cells, int* __restrict__ count, int size_total)
         cells[i] = 0;
 }
 
-//__global__
-__device__
-void nbl_build(float*  __restrict__ x, int* __restrict__ cells, int* __restrict__ count, int* __restrict__ size,
+__global__ void nbl_build(float *x, int *cells, int *count, int *size,
         int size_total, float L){
-    //int idx = blockDim.x*blockIdx.x + threadIdx.x;
-    //int idy = blockDim.y*blockIdx.y + threadIdx.y;
-    int i = blockDim.x*blockIdx.x + threadIdx.x + (blockDim.y*blockIdx.y + threadIdx.y)*NBLOCKS*NTHREADS;
+    int idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int idy = blockDim.y*blockIdx.y + threadIdx.y;
+    int i = idx + idy*NBLOCKS*NTHREADS;
     volatile int index[2];
 
     index[0] = __float2int_rz(x[2*i+0]/L  * size[0]);
@@ -133,12 +129,10 @@ void nbl_build(float*  __restrict__ x, int* __restrict__ cells, int* __restrict_
     cells[bt] = i;
 }
 
-//__global__ 
-__device__
-void makecopy(float* __restrict__ x, float* __restrict__ copyx){
-    //int idx = blockDim.x*blockIdx.x + threadIdx.x;
-    //int idy = blockDim.y*blockIdx.y + threadIdx.y;
-    int i = blockDim.x*blockIdx.x + threadIdx.x + (blockDim.y*blockIdx.y + threadIdx.y)*NBLOCKS*NTHREADS;
+__global__ void makecopy(float *x, float *copyx){
+    int idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int idy = blockDim.y*blockIdx.y + threadIdx.y;
+    int i = idx + idy*NBLOCKS*NTHREADS;
     copyx[2*i+0] = x[2*i+0];
     copyx[2*i+1] = x[2*i+1];
 }
@@ -146,14 +140,14 @@ void makecopy(float* __restrict__ x, float* __restrict__ copyx){
 //==================================================================
 // the timestep - can be CPU or CUDA!
 //==================================================================
-//__global__
-__device__
-void step(float* __restrict__ x, float* __restrict__ copyx, float* __restrict__ v, int* __restrict__ type, float* __restrict__ rad, float* __restrict__ col,
-          int* __restrict__ cells, int* __restrict__ count, int* __restrict__ size, int size_total,
-          float L, float R, int* __restrict__ pbc, float dt, float Tglobal, float colfact){
-    //int idx = blockDim.x*blockIdx.x + threadIdx.x;
-    //int idy = blockDim.y*blockIdx.y + threadIdx.y;
-    int i = blockDim.x*blockIdx.x + threadIdx.x + (blockDim.y*blockIdx.y + threadIdx.y)*NBLOCKS*NTHREADS;
+__global__
+void step(float *x, float *copyx, float *v, int *type, float *rad, float *col,
+          int *cells, int *count, int *size, int size_total, int *key,
+          float L, float R, int *pbc, float dt, float Tglobal, float colfact){
+
+    int idx = blockDim.x*blockIdx.x + threadIdx.x;
+    int idy = blockDim.y*blockIdx.y + threadIdx.y;
+    int i = idx + idy*NBLOCKS*NTHREADS;
     int j;
 
     //=========================================
@@ -229,15 +223,12 @@ void step(float* __restrict__ x, float* __restrict__ copyx, float* __restrict__ 
                 float py2 = copyx[2*tn+1];
 
                 dist = 0.0;
-		//RM6
-                //dx[0] = px2 - px;
-                //dx[0] += image[0]*L*tt[0];
-                dx[0] = (px2-px)+image[0]*L*tt[0];
+                dx[0] = px2 - px;
+                dx[0] += image[0]*L*tt[0];
                 dist += dx[0]*dx[0];
-                //RM6
-                //dx[1] = py2 - py;
-                //dx[1] += image[1]*L*tt[1];
-                dx[0] = (py2-py)+image[1]*L*tt[1];
+
+                dx[1] = py2 - py;
+                dx[1] += image[1]*L*tt[1];
                 dist += dx[1]*dx[1];
 
                 //===============================================
@@ -303,27 +294,6 @@ void step(float* __restrict__ x, float* __restrict__ copyx, float* __restrict__ 
     v[2*i+0] = vx;  v[2*i+1] = vy;
 }
 
-__device__
-void step_xrun(float *x, float *copyx, float *v, int *type, float *rad, float *col,
-          int *cells, int *count, int *size, int size_total,
-          float L, float R, int *pbc, float dt, float Tglobal, float colfact)
-{
-        nbl_reset(cells, count, size_total);
-        nbl_build(x, cells, count, size, size_total, L);
-        makecopy(x, copyx);
-        step(x, copyx, v, type, rad, col,
-                    cells, count, size, size_total,
-                    L, R, pbc, dt, Tglobal, colfact);
-}
-__global__
-void step_run(float* __restrict__ x, float* __restrict__ copyx, float*  __restrict__ v, int*  __restrict__ type, float* __restrict__ rad, float* __restrict__ col,
-          int* __restrict__ cells, int* __restrict__ count, int* __restrict__ size, int size_total,
-          float L, float R, int* __restrict__ pbc, float dt, float Tglobal, float colfact)
-{
-        step_xrun(x, copyx, v, type, rad, col,
-                    cells, count, size, size_total,
-                    L, R, pbc, dt, Tglobal, colfact);
-}
 
 //==================================================
 // simulation
@@ -351,31 +321,22 @@ void simulate(int seed){
     int i;
     int mem_size_f = sizeof(float)*N;
     int mem_size_i = sizeof(int)*N;
-//    int mem_size_k = sizeof(int)*256;
+    int mem_size_k = sizeof(int)*256;
 
     int *type    =   (int*)malloc(mem_size_i);
     float *rad   = (float*)malloc(mem_size_f);
     float *col   = (float*)malloc(mem_size_f);
-    #pragma unroll N
-    for (i=0; i<N; i++)
-    { 
-	type[i] = 0; 
-	rad[i] = col[i] = 0.0;
-    }
+    for (i=0; i<N; i++){ type[i] = 0; rad[i] = col[i] = 0.0;}
 
     float *x     = (float*)malloc(2*mem_size_f);
     float *v     = (float*)malloc(2*mem_size_f);
     float *copyx = (float*)malloc(2*mem_size_f);
-    #pragma unroll NTIMESTWO
-    for (i=0; i<NTIMESTWO; i++)
-    {
-	x[i] = v[i] = copyx[i] = 0.0;
-    }
+    for (i=0; i<2*N; i++){x[i] = v[i] = copyx[i] = 0.0;}
 
     float time_end = 2e10;
 
 	time_end = 10;
-/*
+
     #ifdef PLOT
         int *key;
         plot_init(900); // 2**18 - 450, 2**20 - 900, 2**21 - 1100
@@ -385,13 +346,12 @@ void simulate(int seed){
         int *key = (int*)malloc(mem_size_k);
         memset(key, 0, mem_size_k);
     #endif
-*/
+
     //==========================================
     // initialize
     float radius  = 1.0;
     L = 0.97*sqrt(pi*radius*radius*N);
 
-    #pragma unroll N
     for (i=0; i<N; i++){
         rad[i] = radius;
         x[2*i+0] = L*ran_ran2();
@@ -442,7 +402,7 @@ void simulate(int seed){
     int *cu_cells  = NULL;
     int *cu_size   = NULL;
     int *cu_type   = NULL;
-  //  int *cu_key    = NULL;
+    int *cu_key    = NULL;
     float *cu_rad  = NULL;
     float *cu_col  = NULL;
     float *cu_x    = NULL;
@@ -455,7 +415,7 @@ void simulate(int seed){
     cudaMalloc((void**) &cu_cells, mem_cell2);
     cudaMalloc((void**) &cu_size,  mem_size2);
 
-//    cudaMalloc((void**) &cu_key,   mem_size_k);
+    cudaMalloc((void**) &cu_key,   mem_size_k);
     cudaMalloc((void**) &cu_type,  imem_size);
     cudaMalloc((void**) &cu_rad,   fmem_size);
     cudaMalloc((void**) &cu_col,   fmem_size);
@@ -487,13 +447,12 @@ void simulate(int seed){
 
     for (t=0.0; t<time_end; t+=dt){
 //	printf("Starting %f/%f\n",t,time_end);
-/*
         nbl_reset<<<grid, block>>>(cu_cells, cu_count, size_total);
         nbl_build<<<grid, block>>>(cu_x, cu_cells, cu_count, cu_size, size_total, L);
         makecopy<<<grid, block>>>(cu_x, cu_copyx);
-*/
-	step_run<<<grid, block>>>(cu_x, cu_copyx, cu_v, cu_type, cu_rad, cu_col,
-                    cu_cells, cu_count, cu_size, size_total,
+
+        step<<<grid, block>>>(cu_x, cu_copyx, cu_v, cu_type, cu_rad, cu_col,
+                    cu_cells, cu_count, cu_size, size_total, cu_key,
                     L, R, cu_pbc, dt, Tglobal, colfact);
         cudaThreadSynchronize();
         ERROR_CHECK
@@ -505,7 +464,7 @@ void simulate(int seed){
             fflush(stdout);
         }
 
-	/*
+
         #ifdef PLOT
         if (frames % 10 == 0){
             cudaMemcpy(x, cu_x, fmem_siz2, cudaMemcpyDeviceToHost);
@@ -518,9 +477,9 @@ void simulate(int seed){
             cudaMemcpy(cu_key, key, mem_size_k, cudaMemcpyHostToDevice);
         }
         #endif
-	*/
+
 	//#ifdef IOFILE
-	if (frames % 10 == 0)
+	if (frames % 1 == 0)
 	{
 		cudaMemcpy(x, cu_x, fmem_siz2, cudaMemcpyDeviceToHost);
                 cudaMemcpy(col, cu_col, fmem_size, cudaMemcpyDeviceToHost);
@@ -547,7 +506,7 @@ void simulate(int seed){
 
     cudaFree(cu_count);
     cudaFree(cu_cells);
-    //cudaFree(cu_key);
+    cudaFree(cu_key);
     cudaFree(cu_type);
     cudaFree(cu_rad);
     cudaFree(cu_col);
@@ -557,13 +516,11 @@ void simulate(int seed){
     ERROR_CHECK
 
 	end_frames(fp);
-    /*
     #ifdef PLOT
     plot_clean();
     #else
     free(key);
     #endif
-    */
 
 #ifdef _OPENMP
         double log_end = omp_get_wtime();

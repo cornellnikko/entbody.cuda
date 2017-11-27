@@ -1,0 +1,9 @@
+#!/bin/bash
+
+make clean
+make
+
+for ((i=0; i<=10; i++))
+	do
+		./entbody
+	done
